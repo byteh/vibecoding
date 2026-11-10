@@ -1,6 +1,6 @@
 # mqtt-lab
 
-MQTT 3.1.1 学习用的最小工程：两个基础脚本（发布/订阅）加一个进阶版模拟设备。
+MQTT 3.1.1 学习用的最小工程：两个基础脚本（发布/订阅），加进阶版的模拟设备与后端服务。
 
 ## 代码结构
 
@@ -11,14 +11,15 @@ mqtt-lab/
 └── cmd/
     ├── publisher/main.go     # 基础版：每 2s 发一条 JSON 遥测，等 PUBACK
     ├── subscriber/main.go    # 基础版：订阅主题，打印 qos/retained/dup
-    └── device/main.go        # 进阶版：持久会话 + 遗嘱 + 保留状态 + 下行指令
+    ├── device/main.go        # 进阶版设备：持久会话 + 遗嘱 + 保留状态 + 下行指令
+    └── server/main.go        # 进阶版后端：通配订阅所有设备 + 下发控制指令
 ```
 
 `cmd/` 放可执行入口，`internal/` 放不对外暴露的实现，`config/` 是可以被外部包引用的参数层。
 以后加功能就在 `cmd/` 下新增目录，参数仍集中在 `config`。
 
 基础版两个脚本调 `mqttx.Connect(clientID)`（clean session、无遗嘱）；
-进阶版设备调 `mqttx.ConnectWith(mqttx.Options{...})`，连接手势都在 `Options` 里声明。
+进阶版的 `device` 和 `server` 调 `mqttx.ConnectWith(mqttx.Options{...})`，连接手势都在 `Options` 里声明。
 
 
 ## 运行
@@ -73,6 +74,42 @@ docker exec mosquitto mosquitto_sub -h 127.0.0.1 -t 'warehouse/shelf/esp32_001/s
 
 ```bash
 docker exec mosquitto mosquitto_sub -h 127.0.0.1 -i esp32_001 -t '$SYS/broker/version' -C 1
+```
+
+## 后端服务：cmd/server
+
+两个能力和代码的对应关系：
+
+- **感知所有设备上下线**：通配订阅 `warehouse/shelf/+/status`（`+` 只匹配一层，正好是一台设备 ID）。设备的 status 是 retained 的，所以服务一订阅就会收到每台设备的**当前状态快照**，日志里 `retained=true`；之后的上线/掉线（遗嘱）是 `retained=false` 的实时事件。
+- **向指定设备下发指令**：控制台输入 `led_on [deviceID]` / `led_off [deviceID]`，不写设备 ID 时用 `config.ClientID`；主题由 `config.CmdTopicFor(deviceID)` 拼出来。
+
+同样是持久会话（`CleanSession=false`，ClientID `backend_server_001`），`OnConnect` 里重新订阅，`DefaultHandler` 兜底重连瞬间补发的消息（按主题分流到 `handleStatus` / `handleTelemetry`）。
+
+和原稿相比改了两处：
+
+- 指令的 `retain` 从 `true` 改成 `false`。retained 指令会让设备每次重连/重启都被重放一遍（比如重启后灯又被打开）；设备真正离线时的补发交给持久会话的离线队列，不需要 retained。
+- `StatusData` 的 json tag 从 `time` 改成 `timestamp`，和 `cmd/device` 实际发的字段对齐（否则时间字段永远解析成 0）。
+
+### 联调
+
+```bash
+go run ./cmd/device     # 终端 A
+go run ./cmd/server     # 终端 B
+led_on                  # 在 B 里输入，默认发给 esp32_001
+led_off esp32_001       # 显式指定设备
+```
+
+实测日志（device + server 同时跑）：
+
+```
+[backend_server_001] connected to tcp://127.0.0.1:1883 (persistent session)
+subscribed "warehouse/shelf/+/status"
+<- status esp32_001 = online (retained=true)          # 启动即拿到快照
+subscribed "warehouse/shelf/+/up/telemetry"
+<- telemetry esp32_001: 29.7C 56.6% led=off
+-> cmd led_on to esp32_001
+<- telemetry esp32_001: 24.3C 66.7% led=on            # 指令生效
+<- status esp32_001 = offline (retained=false)        # kill -9 设备后由遗嘱触发
 ```
 
 ## 打开报文级日志：mosquitto -v

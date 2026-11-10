@@ -18,12 +18,23 @@ const (
 	// 简单 pub/sub 脚本用的主题。
 	Topic = "device/esp32_001/telemetry"
 
-	// cmd/device（进阶版）用的主题，按 <业务>/<设备>/up|down 规范组织。
+	// 进阶版（cmd/device 与 cmd/server）的主题，按 <业务>/<设备>/up|down 组织。
 	// 用常量拼接 ClientID，改设备名时只需要动上面那一行。
-	TelemetryTopic = "warehouse/shelf/" + ClientID + "/up/telemetry"
-	StatusTopic    = "warehouse/shelf/" + ClientID + "/status"
-	CmdTopic       = "warehouse/shelf/" + ClientID + "/down/led_ctrl"
+	TopicPrefix    = "warehouse/shelf/"
+	TelemetryTopic = TopicPrefix + ClientID + "/up/telemetry"
+	StatusTopic    = TopicPrefix + ClientID + "/status"
+	CmdTopic       = TopicPrefix + ClientID + "/down/led_ctrl"
+
+	// cmd/server 的身份与通配订阅：+ 只匹配一层，正好对应一台设备的 ID。
+	ServerClientID    = "backend_server_001"
+	AllTelemetryTopic = TopicPrefix + "+/up/telemetry"
+	AllStatusTopic    = TopicPrefix + "+/status"
 )
+
+// CmdTopicFor 返回指定设备的下行指令主题。
+func CmdTopicFor(deviceID string) string {
+	return TopicPrefix + deviceID + "/down/led_ctrl"
+}
 
 // Addr 返回 paho 需要的 broker 地址，例如 tcp://127.0.0.1:1883。
 //
