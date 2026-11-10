@@ -41,6 +41,7 @@ go run ./cmd/publisher    # 再起发布端
 - **遗嘱消息**：`Options.Will` 指向 status 主题、QoS 1、`retained=true`。payload 在连接时就被 broker 记下，所以里面的时间戳是**连接时间**，不是掉线时间。正常 `DISCONNECT` 不会触发遗嘱。
 - **保留状态**：`publishStatus` 用 `retained=true`，新订阅者一连上就能拿到当前状态；正常退出时主动补一条 `offline`。
 - **下行指令**：订阅 `CmdTopic`，回调里改 LED 状态，下一次遥测的 `led_status` 会体现出来。
+- **单实例保护**：启动时对「ClientID + broker 地址」加本地文件锁（`internal/mqttx/lock.go`），第二个进程直接退出并打印占用者 pid，避免两个实例用同一 ClientID 互相踢下线、疯狂重连。
 
 三个主题都在 `config/config.go` 里用 ClientID 拼出来：
 

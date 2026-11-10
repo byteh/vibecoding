@@ -287,6 +287,18 @@ New client connected from 172.17.0.1:62044 as esp32_001 (p4, c0, k60).
 
 结论：ClientID 是会话的钥匙。基础脚本用 `esp32_001_pub` / `esp32_001_sub` 后缀，就是为了避免和自己打架；`cmd/device` 用裸 ID 是因为它要复用自己的持久会话。
 
+**本机双实例：启动时就挡住，而不是事后互踢**
+
+两个窗口先后 `go run ./cmd/device`，以前会看到两边疯狂刷 `connected ... connection lost: EOF` —— 因为 paho 自动重连，你踢我我踢你，形成死循环。现在 `cmd/device` / `cmd/server` 启动时先对"ClientID + broker 地址"加本地文件锁（`internal/mqttx/lock.go`），第二个实例直接退出：
+
+```
+16:02:19.856382 ClientID "esp32_001" 在 tcp://127.0.0.1:1883 上已被本机另一个进程占用（pid 59794），先停掉它再启动
+```
+
+- 锁由内核在进程退出时释放，`kill -9` 也不会留下死文件；
+- 锁的键包含 broker 地址，所以同一个 ClientID 连不同 broker（`MQTT_ADDR` 调试实例）不冲突；
+- 想演示"抢占"本身，就用上面的 `mosquitto_sub -i esp32_001` 从 broker 侧抢，它不受本地锁约束。
+
 顺带看 `(p4, c0, k60)`：`p4` = MQTT 3.1.1，`c0` = clean session false，`k60` = keepalive 60s，正好对应 `Options` 的三个字段。
 
 ---
@@ -438,7 +450,7 @@ sudo tcpdump -i lo0 -nn -X 'tcp port 1883'
 | --- | --- | --- |
 | `connect failed: connection refused` | broker 没起 / 端口不对 | `docker ps --filter name=mosquitto`、`nc -z 127.0.0.1 1883` |
 | 订阅端收不到消息 | 主题不一致（拼写、`+`/`#` 层级）、发布端 Topic 写错 | broker 日志搜 `Received PUBLISH` 和 `Sending PUBLISH` |
-| 一端反复重连、另一端收不到 | 两端 ClientID 相同，互相踢 | broker 日志搜 `session taken over` |
+| 一端反复重连、另一端收不到 | 两端 ClientID 相同，互相踢（本机双开会被文件锁拦住） | broker 日志搜 `session taken over` |
 | `PUBACK received` 但没有订阅者 | 发布正常，问题在订阅（QoS/主题/未订阅成功） | 订阅端日志里有没有 `subscribed ...` |
 | 设备重启后灯自己亮了 | 指令用了 retained | 搜 broker 日志里 `r1` 的指令 PUBLISH |
 | 离线期间的消息收不到 | 用了 clean session；或没设 `DefaultHandler` | 看连接日志是 `(clean session)` 还是 `(persistent session)` |

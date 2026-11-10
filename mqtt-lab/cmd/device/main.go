@@ -68,6 +68,13 @@ func (d *device) ledState() string {
 func main() {
 	log.SetFlags(log.Lmicroseconds)
 
+	// 同一 ClientID 只能有一个实例：否则两个进程会互相踢下线、疯狂重连。
+	release, err := mqttx.AcquireLock(config.ClientID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer release()
+
 	d := &device{led: "off"}
 
 	// 遗嘱的 payload 在连接时就被 broker 记下了，时间戳是连接时间而不是掉线时间。

@@ -50,6 +50,13 @@ type CmdData struct {
 func main() {
 	log.SetFlags(log.Lmicroseconds)
 
+	// 同一 ClientID 只能有一个实例：否则两个进程会互相踢下线、疯狂重连。
+	release, err := mqttx.AcquireLock(config.ServerClientID)
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer release()
+
 	client, err := mqttx.ConnectWith(mqttx.Options{
 		ClientID:     config.ServerClientID,
 		CleanSession: false,
