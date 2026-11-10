@@ -1,0 +1,166 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>🐍 贪吃蛇</title>
+  <link rel="stylesheet" href="snake.css?v=1785076600" />
+</head>
+<body>
+  <h1>🐍 贪吃蛇</h1>
+  <div id="scoreboard">
+    <div class="score-box">得分：<span id="score">0</span></div>
+    <div class="score-box">最高：<span id="best">0</span></div>
+    <div class="score-box">⚡ <span id="fps-display">10</span> fps</div>
+    <div class="score-box">⏱ <span id="timer-display">0:00</span></div>
+  </div>
+
+  <div id="game-wrap">
+    <!-- 左侧：蛇头坐标 -->
+    <div class="side-panel">
+      <div class="side-title">🐍 蛇头<br>坐标</div>
+      <div class="coord-card">
+        <div class="coord-icon">↔</div>
+        <div class="coord-label">X</div>
+        <div class="coord-value" id="snake-x">—</div>
+      </div>
+      <div class="coord-card">
+        <div class="coord-icon">↕</div>
+        <div class="coord-label">Y</div>
+        <div class="coord-value" id="snake-y">—</div>
+      </div>
+    </div>
+
+    <canvas id="canvas" width="500" height="500"></canvas>
+
+    <!-- 右侧：食物坐标 -->
+    <div class="side-panel">
+      <div class="side-title">🍎 食物<br>坐标</div>
+      <div class="coord-card">
+        <div class="coord-icon">↔</div>
+        <div class="coord-label">X</div>
+        <div class="coord-value" id="food-x">—</div>
+      </div>
+      <div class="coord-card">
+        <div class="coord-icon">↕</div>
+        <div class="coord-label">Y</div>
+        <div class="coord-value" id="food-y">—</div>
+      </div>
+    </div>
+
+    <!-- 最右侧：足迹列表 -->
+    <div id="trace-panel">
+      <div class="trace-header">
+        <span class="trace-title">👣 蛇头足迹</span>
+      </div>
+      <div id="trace-list"></div>
+      <div class="trace-actions">
+        <button class="trace-clear-btn" id="btn-clear-trace">清空</button>
+        <button class="btn-save-trace" id="btn-save-trace">💾 保存</button>
+      </div>
+    </div>
+
+    <!-- 开始/暂停/结束覆盖层 -->
+    <div id="overlay">
+      <h2 id="overlay-title">🐍 贪吃蛇</h2>
+      <p id="overlay-msg">按下开始，享受卡通蛇的乐趣！</p>
+      <button class="btn btn-start" id="btn-start">▶ 开始游戏</button>
+      <button class="btn btn-replay hidden" id="btn-replay">🎬 回放</button>
+      <button class="btn btn-settings" id="btn-open-settings">⚙ 设置</button>
+    </div>
+
+    <!-- 通关撒花容器 -->
+    <div id="confetti-layer"></div>
+
+    <!-- 设置面板 -->
+    <div id="settings-panel" class="hidden">
+      <h2>⚙ 游戏设置</h2>
+      <div class="setting-row">
+        <label>🐌 蛇的速度</label>
+        <div class="speed-options">
+          <button class="speed-btn" data-fps="2">
+            <span class="spd-icon">🐌</span>
+            <span class="spd-name">蜗牛</span>
+            <span class="spd-val">2 fps</span>
+          </button>
+          <button class="speed-btn" data-fps="5">
+            <span class="spd-icon">🐢</span>
+            <span class="spd-name">慢速</span>
+            <span class="spd-val">5 fps</span>
+          </button>
+          <button class="speed-btn active" data-fps="10">
+            <span class="spd-icon">🐇</span>
+            <span class="spd-name">正常</span>
+            <span class="spd-val">10 fps</span>
+          </button>
+          <button class="speed-btn" data-fps="18">
+            <span class="spd-icon">🐆</span>
+            <span class="spd-name">快速</span>
+            <span class="spd-val">18 fps</span>
+          </button>
+          <button class="speed-btn" data-fps="30">
+            <span class="spd-icon">⚡</span>
+            <span class="spd-name">极速</span>
+            <span class="spd-val">30 fps</span>
+          </button>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="toggle-row">
+          <label class="toggle-switch">
+            <input type="checkbox" id="toggle-autospeed" />
+            <span class="toggle-track"></span>
+          </label>
+          <span>🚀 每得10分自动加速 <span class="toggle-hint">（+1 fps）</span></span>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="toggle-row">
+          <label class="toggle-switch">
+            <input type="checkbox" id="toggle-demo" />
+            <span class="toggle-track"></span>
+          </label>
+          <span>🎓 玩法演示</span>
+          <span class="toggle-hint" style="margin-left:6px;">时长：</span>
+          <select id="demo-duration">
+            <option value="60">1 分钟</option>
+            <option value="120">2 分钟</option>
+            <option value="180">3 分钟</option>
+            <option value="240">4 分钟</option>
+            <option value="300">5 分钟</option>
+            <option value="360">6 分钟</option>
+            <option value="420">7 分钟</option>
+            <option value="480">8 分钟</option>
+            <option value="540">9 分钟</option>
+            <option value="600">10 分钟</option>
+            <option value="900">15 分钟</option>
+            <option value="1200">20 分钟</option>
+            <option value="1500">25 分钟</option>
+            <option value="1800">30 分钟</option>
+            <option value="3600">60 分钟</option>
+          </select>
+        </div>
+      </div>
+      <div class="setting-row">
+        <div class="toggle-row">
+          <span>🧩 迷宫大小</span>
+          <span class="toggle-hint" style="margin-left:6px;">格数：</span>
+          <select id="grid-size">
+            <option value="10">10×10（小 · 高难）</option>
+            <option value="15">15×15（中）</option>
+            <option value="25" selected>25×25（大 · 默认）</option>
+          </select>
+        </div>
+      </div>
+      <button class="btn btn-close-settings" id="btn-close-settings">✓ 确定</button>
+      <button class="btn btn-apply-restart" id="btn-apply-restart">▶ 应用并重新开始</button>
+      <button class="btn btn-import-replay" id="btn-import-replay">📂 导入足迹并回放</button>
+      <input type="file" id="import-file-input" accept=".csv,text/csv" style="display:none" />
+    </div>
+  </div>
+
+  <div id="controls-hint">⬆⬇⬅➡ 方向键 / WASD 控制 &nbsp;|&nbsp; 空格键 暂停</div>
+
+  <script src="snake.js?v=1785076800"></script>
+</body>
+</html>
