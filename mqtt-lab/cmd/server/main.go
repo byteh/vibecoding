@@ -119,16 +119,19 @@ func dispatch(_ mqtt.Client, msg mqtt.Message) {
 }
 
 // handleStatus 感知设备上下线；retained=true 的那条是设备当前状态，不是新事件。
+//
+// 设备身份以主题里的设备 ID 为准：MQTT 3.1.1 不会把"发布者是谁"告诉订阅者，
+// payload 里的 device_id 是设备自己填的，可能和主题不一致，所以以主题为准并校验 payload。
 func handleStatus(_ mqtt.Client, msg mqtt.Message) {
 	var data StatusData
 	if err := json.Unmarshal(msg.Payload(), &data); err != nil {
 		log.Printf("invalid status on %s: %v", msg.Topic(), err)
 		return
 	}
-	if data.DeviceID == "" {
-		data.DeviceID = deviceIDFromTopic(msg.Topic())
-	}
-	log.Printf("<- status %s = %s (retained=%v)", data.DeviceID, data.Status, msg.Retained())
+
+	deviceID := deviceIDFromTopic(msg.Topic())
+	warnIfIDMismatch(deviceID, data.DeviceID)
+	log.Printf("<- [%s] status = %s (retained=%v)", deviceID, data.Status, msg.Retained())
 }
 
 func handleTelemetry(_ mqtt.Client, msg mqtt.Message) {
@@ -137,10 +140,17 @@ func handleTelemetry(_ mqtt.Client, msg mqtt.Message) {
 		log.Printf("invalid telemetry on %s: %v", msg.Topic(), err)
 		return
 	}
-	if data.DeviceID == "" {
-		data.DeviceID = deviceIDFromTopic(msg.Topic())
+
+	deviceID := deviceIDFromTopic(msg.Topic())
+	warnIfIDMismatch(deviceID, data.DeviceID)
+	log.Printf("<- [%s] telemetry %.1fC %.1f%% led=%s", deviceID, data.Temperature, data.Humidity, data.LedStatus)
+}
+
+// warnIfIDMismatch 主题和 payload 里的设备 ID 不一致时提示——通常意味着设备发错了主题。
+func warnIfIDMismatch(fromTopic, fromPayload string) {
+	if fromPayload != "" && fromPayload != fromTopic {
+		log.Printf("warning: topic says device %q but payload says %q", fromTopic, fromPayload)
 	}
-	log.Printf("<- telemetry %s: %.1fC %.1f%% led=%s", data.DeviceID, data.Temperature, data.Humidity, data.LedStatus)
 }
 
 // deviceIDFromTopic 从 warehouse/shelf/<id>/... 中取出设备 ID。

@@ -41,7 +41,7 @@ go run ./cmd/publisher    # 再起发布端
 - **遗嘱消息**：`Options.Will` 指向 status 主题、QoS 1、`retained=true`。payload 在连接时就被 broker 记下，所以里面的时间戳是**连接时间**，不是掉线时间。正常 `DISCONNECT` 不会触发遗嘱。
 - **保留状态**：`publishStatus` 用 `retained=true`，新订阅者一连上就能拿到当前状态；正常退出时主动补一条 `offline`。
 - **下行指令**：订阅 `CmdTopic`，回调里改 LED 状态，下一次遥测的 `led_status` 会体现出来。
-- **单实例保护**：启动时对「ClientID + broker 地址」加本地文件锁（`internal/mqttx/lock.go`），第二个进程直接退出并打印占用者 pid，避免两个实例用同一 ClientID 互相踢下线、疯狂重连。
+- **多设备模拟**：启动时按 `config.MaxDevices`（默认 3）抢占第一个空闲槽位并加本地文件锁，三个终端依次得到 `esp32_001` / `esp32_002` / `esp32_003`；每个设备用各自的主题，超过上限启动会直接退出。进程退出后槽位立刻可复用。
 
 三个主题都在 `config/config.go` 里用 ClientID 拼出来：
 
@@ -96,24 +96,30 @@ docker exec mosquitto mosquitto_sub -h 127.0.0.1 -i esp32_001 -t '$SYS/broker/ve
 ### 联调
 
 ```bash
-go run ./cmd/device     # 终端 A
+go run ./cmd/device     # 终端 A，自动拿到 esp32_001
+go run ./cmd/device     # 终端 A2，自动拿到 esp32_002
 go run ./cmd/server     # 终端 B
 led_on                  # 在 B 里输入，默认发给 esp32_001
-led_off esp32_001       # 显式指定设备
+led_on esp32_002        # 显式指定设备
 ```
 
-实测日志（device + server 同时跑）：
+`cmd/device` 启动时会按 `config.DeviceID(1..MaxDevices)` 抢第一个空闲槽位，所以同一台机器开多个终端就是多台设备（最多 `config.MaxDevices`，默认 3）。设备身份在日志里以 `[设备ID]` 标出：
+
+实测日志（三台设备 + server 同时跑）：
 
 ```
 [backend_server_001] connected to tcp://127.0.0.1:1883 (persistent session)
-subscribed "warehouse/shelf/+/status"
-<- status esp32_001 = online (retained=true)          # 启动即拿到快照
-subscribed "warehouse/shelf/+/up/telemetry"
-<- telemetry esp32_001: 29.7C 56.6% led=off
--> cmd led_on to esp32_001
-<- telemetry esp32_001: 24.3C 66.7% led=on            # 指令生效
-<- status esp32_001 = offline (retained=false)        # kill -9 设备后由遗嘱触发
+<- [esp32_001] status = online (retained=true)        # 启动即拿到快照
+<- [esp32_002] status = online (retained=true)
+<- [esp32_003] status = online (retained=true)
+<- [esp32_001] telemetry 23.8C 56.0% led=off
+<- [esp32_002] telemetry 26.2C 66.7% led=on           # led_on esp32_002 只影响这一台
+-> cmd led_off to esp32_001
+<- [esp32_003] telemetry 22.1C 63.5% led=off
+<- [esp32_002] status = offline (retained=false)      # kill -9 后由遗嘱触发，身份来自主题
 ```
+
+> 说明：MQTT 3.1.1 不会告诉订阅者"这条消息是哪个 ClientID 发的"，所以身份只能从主题（`warehouse/shelf/<id>/...`）或 payload 的 `device_id` 推断。服务端以主题为准，并在两者不一致时打 `warning`。
 
 ## 报文级日志
 

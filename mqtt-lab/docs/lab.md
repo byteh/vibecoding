@@ -287,17 +287,22 @@ New client connected from 172.17.0.1:62044 as esp32_001 (p4, c0, k60).
 
 结论：ClientID 是会话的钥匙。基础脚本用 `esp32_001_pub` / `esp32_001_sub` 后缀，就是为了避免和自己打架；`cmd/device` 用裸 ID 是因为它要复用自己的持久会话。
 
-**本机双实例：启动时就挡住，而不是事后互踢**
+**本机多实例：自动分配空号，而不是互踢**
 
-两个窗口先后 `go run ./cmd/device`，以前会看到两边疯狂刷 `connected ... connection lost: EOF` —— 因为 paho 自动重连，你踢我我踢你，形成死循环。现在 `cmd/device` / `cmd/server` 启动时先对"ClientID + broker 地址"加本地文件锁（`internal/mqttx/lock.go`），第二个实例直接退出：
+两个窗口先后 `go run ./cmd/device`，以前会看到两边疯狂刷 `connected ... connection lost: EOF` —— 因为 paho 自动重连，你踢我我踢你，形成死循环。现在 `cmd/device` 启动时会按 `config.DeviceID(1..config.MaxDevices)` 抢第一个空闲槽位（`internal/mqttx/lock.go` 里的文件锁），于是：
 
 ```
-16:02:19.856382 ClientID "esp32_001" 在 tcp://127.0.0.1:1883 上已被本机另一个进程占用（pid 59794），先停掉它再启动
+终端 1 → [esp32_001] connected ...      # 拿到 001
+终端 2 → [esp32_002] connected ...      # 001 被占，拿 002
+终端 3 → [esp32_003] connected ...      # 拿 003
+终端 4 → 最多只允许 3 台设备同时运行（config.MaxDevices），先停掉一个再启动
 ```
 
-- 锁由内核在进程退出时释放，`kill -9` 也不会留下死文件；
+- 锁由内核在进程退出时释放，`kill -9` 也不会留下死文件，空号会立刻被后来的进程复用（比如停掉 002，下一个启动的终端就又拿到 002）；
 - 锁的键包含 broker 地址，所以同一个 ClientID 连不同 broker（`MQTT_ADDR` 调试实例）不冲突；
 - 想演示"抢占"本身，就用上面的 `mosquitto_sub -i esp32_001` 从 broker 侧抢，它不受本地锁约束。
+
+想模拟更多设备，把 `config.MaxDevices` 调大即可，每台设备用 `warehouse/shelf/esp32_00X/...` 这套独立主题。
 
 顺带看 `(p4, c0, k60)`：`p4` = MQTT 3.1.1，`c0` = clean session false，`k60` = keepalive 60s，正好对应 `Options` 的三个字段。
 
@@ -338,30 +343,47 @@ docker exec mosquitto mosquitto_pub -h 127.0.0.1 -t lab/a/up/telemetry -m '{"t":
 预算：10 分钟
 
 ```bash
-go run ./cmd/device     # 终端 A
+go run ./cmd/device     # 终端 A，自动拿到 esp32_001
 go run ./cmd/server     # 终端 B
 ```
 
 在终端 B 输入：
 
 ```
-led_on                  # 默认发给 config.ClientID
+led_on                  # 默认发给 config.ClientID（esp32_001）
 led_off esp32_001
 ```
 
-预期：
+预期（服务端日志里的 `[...]` 就是设备身份，来自主题 `warehouse/shelf/<id>/...`）：
 
 ```
 # 终端 B
-<- status esp32_001 = online (retained=true)     # 启动即拿到状态快照
-<- telemetry esp32_001: 29.7C 56.6% led=off
+<- [esp32_001] status = online (retained=true)     # 启动即拿到状态快照
+<- [esp32_001] telemetry 29.7C 56.6% led=off
 -> cmd led_on to esp32_001
-<- telemetry esp32_001: 24.3C 66.7% led=on       # 指令生效
+<- [esp32_001] telemetry 24.3C 66.7% led=on        # 指令生效
 ```
 
-然后 `kill -9` 设备，终端 B 应立刻打印 `<- status esp32_001 = offline (retained=false)`。
+然后 `kill -9` 设备，终端 B 应立刻打印 `<- [esp32_001] status = offline (retained=false)`。
 
-**多设备实验**（不写代码也能做，用容器客户端伪造第二台设备）：
+**多设备实验**：再开一个终端跑 `go run ./cmd/device`，它会自动拿到 `esp32_002`：
+
+```bash
+go run ./cmd/device       # 终端 C → [esp32_002]
+led_on esp32_002          # 在终端 B 里输入，只有 002 的 LED 变化
+```
+
+预期终端 B 同时出现三台设备（如果都开着）的日志，身份一目了然：
+
+```
+<- [esp32_002] telemetry 26.2C 66.7% led=on
+<- [esp32_001] telemetry 23.8C 56.0% led=off
+<- [esp32_003] telemetry 22.1C 63.5% led=off
+```
+
+> 注意：MQTT 3.1.1 不会把发布者的 ClientID 传给订阅者，所以服务端的设备身份只能从主题或 payload 推断。当前实现以主题为准，payload 里的 `device_id` 不一致时会打一条 `warning: topic says device ... but payload says ...`。想验证这条告警，用 `mosquitto_pub` 往 `esp32_002` 的主题发一条 `device_id` 为 `esp32_999` 的消息即可。
+
+也可以不用真设备，用容器客户端伪造一台（适合验证定向下发）：
 
 ```bash
 # 终端 C：盯住 esp32_002 的指令主题
@@ -374,7 +396,7 @@ docker exec mosquitto mosquitto_pub -h 127.0.0.1 -r \
   -m '{"device_id":"esp32_002","status":"online","timestamp":0}'
 ```
 
-此时终端 B 应看到 `esp32_002 = online`；在 B 里输入 `led_on esp32_002`，只有终端 C 收到指令，`esp32_001` 不动。做完清理：
+此时终端 B 应看到 `<- [esp32_002] status = online`；在 B 里输入 `led_on esp32_002`，只有终端 C 收到指令，`esp32_001` 不动。做完清理：
 
 ```bash
 docker exec mosquitto mosquitto_pub -h 127.0.0.1 -r -n -t 'warehouse/shelf/esp32_002/status'
@@ -450,7 +472,7 @@ sudo tcpdump -i lo0 -nn -X 'tcp port 1883'
 | --- | --- | --- |
 | `connect failed: connection refused` | broker 没起 / 端口不对 | `docker ps --filter name=mosquitto`、`nc -z 127.0.0.1 1883` |
 | 订阅端收不到消息 | 主题不一致（拼写、`+`/`#` 层级）、发布端 Topic 写错 | broker 日志搜 `Received PUBLISH` 和 `Sending PUBLISH` |
-| 一端反复重连、另一端收不到 | 两端 ClientID 相同，互相踢（本机双开会被文件锁拦住） | broker 日志搜 `session taken over` |
+| 一端反复重连、另一端收不到 | 两端 ClientID 相同，互相踢（本机多开已自动分配空号，见 E5） | broker 日志搜 `session taken over` |
 | `PUBACK received` 但没有订阅者 | 发布正常，问题在订阅（QoS/主题/未订阅成功） | 订阅端日志里有没有 `subscribed ...` |
 | 设备重启后灯自己亮了 | 指令用了 retained | 搜 broker 日志里 `r1` 的指令 PUBLISH |
 | 离线期间的消息收不到 | 用了 clean session；或没设 `DefaultHandler` | 看连接日志是 `(clean session)` 还是 `(persistent session)` |

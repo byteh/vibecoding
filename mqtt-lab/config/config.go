@@ -11,10 +11,18 @@ import (
 )
 
 const (
-	Broker   = "127.0.0.1"
-	Port     = 1883
-	ClientID = "esp32_001"
-	QoS      = 1
+	Broker = "127.0.0.1"
+	Port   = 1883
+	QoS    = 1
+
+	// 多设备模拟：cmd/device 启动时按 1..MaxDevices 顺序抢占空闲槽位，
+	// 生成 esp32_001 / esp32_002 / esp32_003 这样的 ClientID。
+	// 想同时模拟更多设备，改 MaxDevices 即可（每个进程占一个槽位）。
+	DeviceIDPrefix = "esp32"
+	MaxDevices     = 3
+
+	// 默认设备 ID：简单 pub/sub 脚本和 server 的默认下发目标用它。
+	ClientID = DeviceIDPrefix + "_001"
 
 	// 设备上报遥测的周期（cmd/device 的定时器）。
 	TelemetryInterval = 10 * time.Second
@@ -23,7 +31,7 @@ const (
 	Topic = "device/esp32_001/telemetry"
 
 	// 进阶版（cmd/device 与 cmd/server）的主题，按 <业务>/<设备>/up|down 组织。
-	// 用常量拼接 ClientID，改设备名时只需要动上面那一行。
+	// 这些常量只对应默认设备，多设备场景用下面的 *TopicFor 函数按 ID 生成。
 	TopicPrefix    = "warehouse/shelf/"
 	TelemetryTopic = TopicPrefix + ClientID + "/up/telemetry"
 	StatusTopic    = TopicPrefix + ClientID + "/status"
@@ -34,6 +42,21 @@ const (
 	AllTelemetryTopic = TopicPrefix + "+/up/telemetry"
 	AllStatusTopic    = TopicPrefix + "+/status"
 )
+
+// DeviceID 返回第 i 台设备的 ClientID（i 从 1 开始）：esp32_001、esp32_002 ...
+func DeviceID(i int) string {
+	return fmt.Sprintf("%s_%03d", DeviceIDPrefix, i)
+}
+
+// TelemetryTopicFor 返回指定设备的上报主题。
+func TelemetryTopicFor(deviceID string) string {
+	return TopicPrefix + deviceID + "/up/telemetry"
+}
+
+// StatusTopicFor 返回指定设备的状态主题。
+func StatusTopicFor(deviceID string) string {
+	return TopicPrefix + deviceID + "/status"
+}
 
 // CmdTopicFor 返回指定设备的下行指令主题。
 func CmdTopicFor(deviceID string) string {

@@ -1,12 +1,13 @@
 // device 是进阶版模拟设备，把四个能力落在现有架构上：
 //
-//  1. 断网自动重连 + 持久会话：CleanSession=false + 固定 ClientID（config.ClientID）；
+//  1. 断网自动重连 + 持久会话：CleanSession=false + 稳定 ClientID；
 //  2. 遗嘱消息：连接时通过 mqttx.Options.Will 注册，异常断线由 broker 代发 offline；
 //  3. 保留状态：publishStatus 用 retained=true，后上线的订阅者立刻拿到当前状态；
-//  4. 下行指令：每次（重）连成功后订阅 CmdTopic，回调里改 LED 状态。
+//  4. 下行指令：每次（重）连成功后订阅本设备的指令主题，回调里改 LED 状态。
 //
-// 与 cmd/publisher 的区别：publisher 是一次性的上报脚本，这里是有生命周期的"设备"，
-// 所以 ClientID 不需要加后缀——它本来就是独立的一台设备；但同一 ClientID 只能有一个实例在跑。
+// 与 cmd/publisher 的区别：publisher 是一次性的上报脚本，这里是有生命周期的"设备"。
+// 每台设备独占一个 ClientID 和一个槽位：启动时按 1..config.MaxDevices 抢第一个空号，
+// 所以同一台机器上开多个终端，就得到 esp32_001 / esp32_002 / esp32_003 三台"设备"。
 package main
 
 import (
@@ -49,6 +50,7 @@ type CmdData struct {
 
 // device 只保存本地状态；client 由各函数传参，避免回调与主循环间的竞态。
 type device struct {
+	id  string
 	mu  sync.RWMutex
 	led string
 }
@@ -68,28 +70,29 @@ func (d *device) ledState() string {
 func main() {
 	log.SetFlags(log.Lmicroseconds)
 
-	// 同一 ClientID 只能有一个实例：否则两个进程会互相踢下线、疯狂重连。
-	release, err := mqttx.AcquireLock(config.ClientID)
+	// 同一 ClientID 只能有一个实例；多终端调试时按 1..MaxDevices 自动分配空闲槽位：
+	// 第一个进程拿到 esp32_001，第二个 esp32_002，以此类推。
+	id, release, err := mqttx.AcquireDeviceID(config.MaxDevices)
 	if err != nil {
 		log.Fatal(err)
 	}
 	defer release()
 
-	d := &device{led: "off"}
+	d := &device{id: id, led: "off"}
 
 	// 遗嘱的 payload 在连接时就被 broker 记下了，时间戳是连接时间而不是掉线时间。
-	willPayload, err := json.Marshal(newStatus("offline"))
+	willPayload, err := json.Marshal(newStatus(d.id, "offline"))
 	if err != nil {
 		log.Fatalf("marshal will: %v", err)
 	}
 
 	client, err := mqttx.ConnectWith(mqttx.Options{
-		// 持久会话要求 ClientID 稳定，所以这里直接用配置里的设备 ID。
-		ClientID:     config.ClientID,
+		// 持久会话要求 ClientID 稳定：槽位号在一次运行期间不变，重启后按空号重新分配。
+		ClientID:     d.id,
 		CleanSession: false,
 		KeepAlive:    60 * time.Second,
 		Will: &mqttx.Will{
-			Topic:   config.StatusTopic,
+			Topic:   config.StatusTopicFor(d.id),
 			Payload: willPayload,
 			QoS:     byte(config.QoS),
 			// retain=true：设备掉线后，任何后订阅 status 的人也能看到 offline。
@@ -99,7 +102,7 @@ func main() {
 			// OnConnect 跑在 paho 的内部协程里，这里不阻塞等待 token，
 			// 把"上报在线状态 + 订阅指令"放到独立协程执行。
 			go func() {
-				publishStatus(c, "online")
+				publishStatus(c, d.id, "online")
 				subscribeCmd(c, d)
 			}()
 		},
@@ -118,13 +121,13 @@ func main() {
 	defer ticker.Stop()
 
 	log.Printf("device %s running: publish %q every %s, subscribe %q",
-		config.ClientID, config.TelemetryTopic, config.TelemetryInterval, config.CmdTopic)
+		d.id, config.TelemetryTopicFor(d.id), config.TelemetryInterval, config.CmdTopicFor(d.id))
 
 	for {
 		select {
 		case <-stop:
 			// 正常 DISCONNECT 不会触发遗嘱，所以主动补一条 retained 的 offline。
-			publishStatus(client, "offline")
+			publishStatus(client, d.id, "offline")
 			client.Disconnect(250)
 			log.Println("bye")
 			return
@@ -134,23 +137,23 @@ func main() {
 	}
 }
 
-func newStatus(status string) StatusData {
+func newStatus(deviceID, status string) StatusData {
 	return StatusData{
-		DeviceID:  config.ClientID,
+		DeviceID:  deviceID,
 		Status:    status,
 		Timestamp: time.Now().Unix(),
 	}
 }
 
 // publishStatus 上报设备状态；retained 让新订阅者不必等下一次上报。
-func publishStatus(c mqtt.Client, status string) {
-	payload, err := json.Marshal(newStatus(status))
+func publishStatus(c mqtt.Client, deviceID, status string) {
+	payload, err := json.Marshal(newStatus(deviceID, status))
 	if err != nil {
 		log.Printf("marshal status: %v", err)
 		return
 	}
 
-	token := c.Publish(config.StatusTopic, byte(config.QoS), true, payload)
+	token := c.Publish(config.StatusTopicFor(deviceID), byte(config.QoS), true, payload)
 	if !token.WaitTimeout(3 * time.Second) {
 		log.Printf("publish status %q: timeout", status)
 		return
@@ -164,7 +167,7 @@ func publishStatus(c mqtt.Client, status string) {
 
 func publishTelemetry(c mqtt.Client, d *device) {
 	data := TelemetryData{
-		DeviceID:    config.ClientID,
+		DeviceID:    d.id,
 		Temperature: 22 + rand.Float64()*8,
 		Humidity:    50 + rand.Float64()*20,
 		LedStatus:   d.ledState(),
@@ -177,7 +180,7 @@ func publishTelemetry(c mqtt.Client, d *device) {
 	}
 
 	// 遥测不需要 retained：它只在设备存活期间有意义，离线状态由 status 主题表达。
-	token := c.Publish(config.TelemetryTopic, byte(config.QoS), false, payload)
+	token := c.Publish(config.TelemetryTopicFor(d.id), byte(config.QoS), false, payload)
 	if !token.WaitTimeout(3 * time.Second) {
 		log.Printf("publish telemetry: timeout")
 		return
@@ -192,22 +195,23 @@ func publishTelemetry(c mqtt.Client, d *device) {
 // subscribeCmd 订阅下行指令。OnConnect 每次重连都会调它，重复订阅同一 filter 是幂等的，
 // 但如果 broker 重启过、持久会话丢了，这一步就是恢复订阅的关键。
 func subscribeCmd(c mqtt.Client, d *device) {
-	token := c.Subscribe(config.CmdTopic, byte(config.QoS), d.onCmd)
+	topic := config.CmdTopicFor(d.id)
+	token := c.Subscribe(topic, byte(config.QoS), d.onCmd)
 	if !token.WaitTimeout(5 * time.Second) {
-		log.Printf("subscribe %q: timeout", config.CmdTopic)
+		log.Printf("subscribe %q: timeout", topic)
 		return
 	}
 	if err := token.Error(); err != nil {
-		log.Printf("subscribe %q: %v", config.CmdTopic, err)
+		log.Printf("subscribe %q: %v", topic, err)
 		return
 	}
-	log.Printf("subscribed %q", config.CmdTopic)
+	log.Printf("subscribed %q", topic)
 }
 
 // onCmd 在 paho 的消息分发协程里执行，只改本地状态、不阻塞等待 token。
-// 它同时是 CmdTopic 的订阅回调，也是 Options.DefaultHandler，所以要自己过滤主题。
+// 它同时是本设备指令主题的订阅回调，也是 Options.DefaultHandler，所以要自己过滤主题。
 func (d *device) onCmd(_ mqtt.Client, msg mqtt.Message) {
-	if msg.Topic() != config.CmdTopic {
+	if msg.Topic() != config.CmdTopicFor(d.id) {
 		return
 	}
 
