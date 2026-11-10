@@ -7,6 +7,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"time"
 )
 
 const (
@@ -14,6 +15,9 @@ const (
 	Port     = 1883
 	ClientID = "esp32_001"
 	QoS      = 1
+
+	// 设备上报遥测的周期（cmd/device 的定时器）。
+	TelemetryInterval = 5 * time.Second
 
 	// 简单 pub/sub 脚本用的主题。
 	Topic = "device/esp32_001/telemetry"

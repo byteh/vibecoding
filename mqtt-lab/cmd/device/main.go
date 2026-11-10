@@ -107,10 +107,11 @@ func main() {
 	stop := make(chan os.Signal, 1)
 	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
 
-	ticker := time.NewTicker(3 * time.Second)
+	ticker := time.NewTicker(config.TelemetryInterval)
 	defer ticker.Stop()
 
-	log.Printf("device %s running: publish %q, subscribe %q", config.ClientID, config.TelemetryTopic, config.CmdTopic)
+	log.Printf("device %s running: publish %q every %s, subscribe %q",
+		config.ClientID, config.TelemetryTopic, config.TelemetryInterval, config.CmdTopic)
 
 	for {
 		select {
