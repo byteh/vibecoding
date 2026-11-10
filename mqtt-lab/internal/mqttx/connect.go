@@ -4,6 +4,7 @@ package mqttx
 import (
 	"fmt"
 	"log"
+	"os"
 	"time"
 
 	mqtt "github.com/eclipse/paho.mqtt.golang"
@@ -42,9 +43,10 @@ type Options struct {
 	DefaultHandler func(mqtt.Client, mqtt.Message)
 }
 
-// Connect 建立默认配置的连接，供简单的 pub/sub 脚本使用。
+// Connect 建立默认配置的连接，供简单的 pub/sub 脚本使用：
+// 干净会话、无遗嘱，每次连接都是新会话，不残留订阅和离线消息。
 func Connect(clientID string) (mqtt.Client, error) {
-	return ConnectWith(Options{ClientID: clientID})
+	return ConnectWith(Options{ClientID: clientID, CleanSession: true})
 }
 
 // ConnectWith 按 Options 建立连接并同步等待 CONNACK。
@@ -54,6 +56,13 @@ func Connect(clientID string) (mqtt.Client, error) {
 func ConnectWith(o Options) (mqtt.Client, error) {
 	if o.KeepAlive <= 0 {
 		o.KeepAlive = 30 * time.Second
+	}
+
+	// MQTT_DEBUG=1 打开 paho 内部日志（CONNECT/SUBSCRIBE/PINGREQ 等报文级动作），
+	// 排查"连不上/收不到"时先看这个，比 broker 日志更贴近客户端行为。
+	if os.Getenv("MQTT_DEBUG") != "" {
+		mqtt.DEBUG = log.New(os.Stdout, "[mqtt] DEBUG ", log.Lmicroseconds)
+		mqtt.ERROR = log.New(os.Stdout, "[mqtt] ERROR ", log.Lmicroseconds)
 	}
 
 	opts := mqtt.NewClientOptions().

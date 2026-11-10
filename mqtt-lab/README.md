@@ -2,6 +2,8 @@
 
 MQTT 3.1.1 学习用的最小工程：两个基础脚本（发布/订阅），加进阶版的模拟设备与后端服务。
 
+手动调试与测试的完整实验手册见 [docs/lab.md](docs/lab.md)（QoS、retained、遗嘱/keepalive、持久会话、ClientID 冲突、通配符、故障注入等 9 组实验）。
+
 ## 代码结构
 
 ```
@@ -112,12 +114,20 @@ subscribed "warehouse/shelf/+/up/telemetry"
 <- status esp32_001 = offline (retained=false)        # kill -9 设备后由遗嘱触发
 ```
 
-## 打开报文级日志：mosquitto -v
+## 报文级日志
 
-`docker logs mosquitto` 只有 notice 级别，看得到「谁连上来了」，看不到 PUBLISH/PUBACK。
-要看完整报文，broker 必须用 `-v` 启动（等价于 `log_type all`）。
+broker 需要用 `-v` 启动（等价于 `log_type all`）才会输出 PUBLISH/PUBACK 这一层。
 
-**方式 A：另起一个调试实例，不动现有的 1883**（推荐）
+本机现在的 `mosquitto` 容器已经带 `-v`，并且配置里加了 `log_dest file /mosquitto/log/mosquitto.log`，
+所以 **`docker logs mosquitto` 几乎是空的**，报文都落在宿主机：
+
+```bash
+tail -f /Users/byteh/docker-data/mosquitto/log/mosquitto.log
+```
+
+如果将来重建容器，下面两种方式可以让它继续输出报文：
+
+**方式 A：另起一个调试实例，不动现有的 1883**
 
 `-v` 是进程启动参数，改不了已在跑的容器，所以用同一份配置在 1884 再起一个：
 
